@@ -1,7 +1,11 @@
 import cv2
 import numpy as np
+from skimage import color  # для deltaE_ciede2000
 from scipy.spatial import distance
 
+folder = 'свет0.5-вид под углом'
+
+f_path = 'test/' + folder + '/'
 
 def load_image(test_image_path):
     """Load an image from a file."""
@@ -11,33 +15,73 @@ def load_image(test_image_path):
     return image
 
 
-def mean_color(image):
-    """Calculate the mean color of an image."""
-    mean_color = image.mean(axis=0).mean(axis=0)
-    return mean_color
+# ---------- BGR ----------
+def mean_color_bgr(image):
+    """Calculate the mean BGR color of an image."""
+    return image.mean(axis=0).mean(axis=0)
 
 
-def closest_color(test_color, reference_colors):
-    """Find the reference color closest to the test color."""
-    distances = [distance.euclidean(test_color, ref_color) for ref_color in reference_colors]
-    print(distances)
-    closest_index = np.argmin(distances)
-    return closest_index, distances[closest_index]
+def all_distances_bgr(test_color, reference_colors):
+    """Compute all Euclidean distances in BGR space."""
+    return [distance.euclidean(test_color, ref) for ref in reference_colors]
 
 
-# Paths to the reference images and the test image
-test_image_path = 'test_img/03.png'
-reference_image_paths = ['ref_img/00.png', 'ref_img/01.png', 'ref_img/03.png', 'ref_img/10.png', 'ref_img/30.png',
-                         'ref_img/100.png']
+# ---------- Lab ----------
+def mean_color_lab(image):
+    """Calculate the mean LAB color of an image (normalized for CIEDE2000)."""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    mean = lab.mean(axis=0).mean(axis=0)  # (L, a, b) в OpenCV
+    # нормализация
+    L = mean[0] / 255 * 100
+    a = mean[1] - 128
+    b = mean[2] - 128
+    return np.array([L, a, b])
 
-# Load images and compute mean colors
-reference_colors = [mean_color(load_image(path)) for path in reference_image_paths]
-test_color = mean_color(load_image(test_image_path))
 
-# Find the closest reference color to the test image color
-closest_index, closest_distance = closest_color(test_color, reference_colors)
+def all_distances_lab(test_color, reference_colors):
+    """Compute all CIEDE2000 distances in Lab space."""
 
-# Print the results
-print(f"The test image is closest to reference image {closest_index + 1} with a distance of {closest_distance}.")
-print(f"Mean color of the test image: {test_color}")
-print(f"Mean color of the closest reference image: {reference_colors[closest_index]}")
+    return [
+        color.deltaE_ciede2000(test_color, ref)
+        #float(color.deltaE_ciede2000(test_color[np.newaxis, :], ref[np.newaxis, :]))
+        for ref in reference_colors
+    ]
+
+
+# ---------- Main ----------
+test_image_path = f_path + 'test.jpg'
+reference_image_paths = [f_path + '1.jpg', f_path + '2.jpg', f_path + '3.jpg', f_path + '4.jpg', f_path + '5.jpg']
+
+# Load & compute mean colors
+reference_colors_bgr = [mean_color_bgr(load_image(p)) for p in reference_image_paths]
+test_color_bgr = mean_color_bgr(load_image(test_image_path))
+
+reference_colors_lab = [mean_color_lab(load_image(p)) for p in reference_image_paths]
+test_color_lab = mean_color_lab(load_image(test_image_path))
+
+# Distances
+distances_bgr = all_distances_bgr(test_color_bgr, reference_colors_bgr)
+distances_lab = all_distances_lab(test_color_lab, reference_colors_lab)
+#print(type(distances_lab))
+closest_index_bgr = int(np.argmin(distances_bgr))
+closest_index_lab = int(np.argmin(distances_lab))
+
+# ---------- Results ----------
+
+print("---------- Results ----------")
+print(" folder is ", "<", folder, ">")
+for i, d in enumerate(distances_lab, 1):
+    print(f"Reference {i}:: distance LAB = {d:.2f}, RGB = {distances_bgr[i-1]:.2f}")
+
+print("\n=== Results in RGB (Euclidean) ===")
+print(f"Closest reference image: {closest_index_bgr + 1}")
+print(f"Test mean BGR: {test_color_bgr}")
+print(f"Closest mean BGR: {reference_colors_bgr[closest_index_bgr]}")
+print()
+
+print("=== Results in Lab (CIEDE2000) ===")
+#for i, d in enumerate(distances_lab, 1):
+#    print(f"Reference {i}: distance = {d:.2f}")
+print(f"Closest reference image: {closest_index_lab + 1}")
+print(f"Test mean Lab: {test_color_lab}")
+print(f"Closest mean Lab: {reference_colors_lab[closest_index_lab]}")
