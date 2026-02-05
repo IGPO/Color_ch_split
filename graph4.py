@@ -24,7 +24,8 @@ def plot_normalized_index(file_path):
         indices = [calc_index(ref) for ref in exp['reference']] # + [calc_index(exp['test'])]
 
         label = f"{exp['metadata'].get('angle', 'n/a')}: {exp['metadata'].get('lighting', 'n/a')}"
-        plt.plot(names, indices, marker='s', linestyle='--', label=label)
+        #plt.plot(names, indices, marker='s', linestyle='--', label=label)
+        plt.plot(indices, names, marker='s', linestyle='--', label=label)
 
     #plt.title('Нормализованный индекс белка (R / (B + G + R))')
     #plt.ylabel('Значение индекса (Отношение Red/(Blue + Green + Red))')
@@ -33,9 +34,9 @@ def plot_normalized_index(file_path):
     #plt.title('Нормализованный индекс кетонов (R / (B + G + R))')
     #plt.ylabel('Значение индекса (Отношение Red/(Blue + Green + Red))')
     plt.title('Нормализованный индекс кетонов (1 / (B^2 + G^2 + R^2)^0.5)')
-    plt.ylabel('Значение индекса (Отношение (1 / (B^2 + G^2 + R^2)^0.5))')
+    plt.xlabel('Значение индекса (Отношение (1 / (B^2 + G^2 + R^2)^0.5))')
     #     
-    plt.xlabel('Зоны (0 = Норма, 16 = Высокие кетоны)')
+    plt.ylabel('Зоны (0 = Норма, 16 = Высокие кетоны)')
     #plt.xlable('Зоны (0 = Норма, 2.0 =  Высокие белки)')
     plt.grid(True, which='both', linestyle=':', alpha=0.5)
     plt.legend()
