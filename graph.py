@@ -94,5 +94,6 @@ RGB_y_example = [math.sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]) for x in RGB
 x_example = [1, 2, 3, 4, 5, 6]
 #y_example = [2, 1.5, 3, 4.5, 2.8, 5]
 labels_example = ["up_0","up_0,5","up_1","side_0","side_0,5","side_1"]
-y_example = RGB_y_example
+# y_example = RGB_y_example
+y_example = LAB_y_example
 plot_xy(x_example, y_example, labels=labels_example)
