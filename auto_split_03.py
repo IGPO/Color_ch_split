@@ -59,17 +59,35 @@ clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 L_clahe = clahe.apply(L)
 L_blur = cv2.GaussianBlur(L_clahe, (5,5), 0)
 
+# # -----------------------------
+# # 2. Canny + Morphology
+# # -----------------------------
+# edges = cv2.Canny(L_blur, 40, 120)
+# kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+# edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 # -----------------------------
-# 2. Canny + Morphology
+
+# 2. HSV Saturation + Adaptive Threshold (вместо Canny) + Morphology
 # -----------------------------
-edges = cv2.Canny(L_blur, 40, 120)
+# Переходим в HSV, чтобы выделить цветные квадраты на белом/сером фоне
+hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+h, s, v = cv2.split(hsv)
+
+# Насыщенность (S) лучше всего выделяет розовые/фиолетовые зоны
+# Используем адаптивный порог, чтобы компенсировать неравномерный свет
+s_thresh = cv2.adaptiveThreshold(s, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                 cv2.THRESH_BINARY, 21, -5)
+
+# Морфология: закрываем дырки внутри квадратов и убираем мелкий мусор
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+edges_closed = cv2.morphologyEx(s_thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+# Можно добавить небольшое размытие, чтобы сгладить "ступеньки" контура
+edges_closed = cv2.GaussianBlur(edges_closed, (3,3), 0)
 
 # -----------------------------
 # 3. Найти контуры
 # -----------------------------
-contours, _ = cv2.findContours(edges_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+contours, _ = cv2.findContours(edges_closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 found_squares = []
 pixels_list = []
 square_imgs = []
@@ -122,7 +140,7 @@ for cnt in contours:
 # -----------------------------
 # верхняя строка: CLAHE + Blur, Canny, Morphology
 top_row = cv2.hconcat([img_draw,
-                       cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR),
+                       cv2.cvtColor(s_thresh, cv2.COLOR_GRAY2BGR),
                        cv2.cvtColor(edges_closed, cv2.COLOR_GRAY2BGR)])
 
 # нижняя строка: квадраты + их маски
