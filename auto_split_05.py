@@ -170,7 +170,7 @@ def estimate_concentration(test_img, model):
 # Загрузка (Loading)
 # -----------------------------
 # Замените на путь к вашему файлу
-image_path = 'кетоны/свет0.5-вид сверху/full.jpg'
+image_path = 'кетоны/свет1-вид сверху/full.jpg'
 img = cv2.imread(image_path)
 if img is None:
     # Создаем заглушку если файла нет в текущей директории для теста
@@ -302,25 +302,33 @@ scale_imgs = [warp_square(img, pts, N) for pts in scale_squares]
 test_imgs = [warp_square(img, pts, N) for pts in test_strips]
 
 # --- 5. Построение модели и расчет ---
+# --- 5. Построение модели и расчет ---
 results = []
+model = None
+
+# Проверяем, достаточно ли у нас изображений шкалы для построения сплайна
 if len(scale_imgs) == expected_count:
-    # Передаем в модель ТОЛЬКО изображения шкалы
-    model, labs = build_color_law(scale_imgs)
-    print(model, labs)
-    print("Модель успешно построена по 5 квадратам шкалы.")
-    
-    # Если нашли хотя бы одну тестовую полоску, считаем её концентрацию
-    if len(test_imgs) > 0:
-        for i, t_img in enumerate(test_imgs):
-            res_c, t_lab = estimate_concentration(t_img, model)
-            if is_colored(t_img):
-                results.append(res_c)
-            else:
-                test_imgs[i] = cv2.cvtColor(t_img, cv2.COLOR_BGR2GRAY) # для отладки, показать что это не цвет
-                results.append(0.0)  # или можно пометить как "неоп
-            print(f"Полоска {i+1}: Расчетная концентрация = {res_c:.2f}")
+    try:
+        model, labs = build_color_law(scale_imgs)
+        print("Модель успешно построена по 5 квадратам шкалы.")
+    except Exception as e:
+        print(f"Не удалось построить модель: {e}")
 else:
-    print(f"Ошибка: Найдено {len(scale_imgs)} квадратов шкалы вместо {expected_count}")
+    print(f"Предупреждение: Найдено {len(scale_imgs)} квадратов шкалы вместо {expected_count}. Расчет концентрации невозможен.")
+
+# Расчет для тестовых полосок
+if len(test_imgs) > 0:
+    for i, t_img in enumerate(test_imgs):
+        # Если модель есть — считаем концентрацию, если нет — ставим None или 0
+        if model is not None:
+            res_c, t_lab = estimate_concentration(t_img, model)
+            results.append(res_c)
+            print(f"Полоска {i+1}: Расчетная концентрация = {res_c:.2f}")
+        else:
+            results.append(None) 
+            print(f"Полоска {i+1}: Найдена, но модель не построена.")
+else:
+    print("Тестовые полоски не обнаружены.")
 
 # Сборка финальной картинки
 
@@ -354,12 +362,17 @@ for i, pts in enumerate(scale_squares):
 # Предположим, результаты хранятся в списке results = [6.81, 4.55, 0.50]
 #results = res_c # подставьте свои переменные из цикла расчета
 
+# Отрисовка тестов (защищенная от IndexError)
 for i, pts in enumerate(test_strips):
     pts_int = pts.astype(int)
     cv2.polylines(img_draw, [pts_int], True, COLOR_TEST, 3)
     
-    # Выводим концентрацию прямо над квадратом
-    conc_text = f"TEST {i+1}: {results[i]:.2f}"
+    # Проверяем, есть ли результат для этого индекса и не пустой ли он
+    if i < len(results) and results[i] is not None:
+        conc_text = f"TEST {i+1}: {results[i]:.2f}"
+    else:
+        conc_text = f"TEST {i+1}: No data"
+        
     cv2.putText(img_draw, conc_text, (pts_int[0][0], pts_int[0][1] - 10), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEST, 2)
 
@@ -367,8 +380,16 @@ if square_imgs:
     bottom_row = cv2.hconcat(square_imgs)
     # Resize to match top row width
     bottom_row = cv2.resize(bottom_row, (img_draw.shape[1], N))
-    model_vis = cv2.resize(model_vis, (img_draw.shape[1], model_vis.shape[0]))  # Подгоняем модель по ширине
-    final_vis = cv2.vconcat([img_draw, bottom_row, model_vis])  # Добавляем модель внизу
+    try:
+        model_vis  # Пытаемся обратиться к переменной
+    except NameError:
+        model_vis = None  # Если ошибка, присваиваем значение по умолчанию
+
+    if model_vis is not None:
+        model_vis = cv2.resize(model_vis, (img_draw.shape[1], model_vis.shape[0]))  # Подгоняем модель по ширине
+        final_vis = cv2.vconcat([img_draw, bottom_row, model_vis])  # Добавляем модель внизу
+    else:
+        final_vis = cv2.vconcat([img_draw, bottom_row])
     cv2.imshow(f"Square {len(found_squares)}", final_vis)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
