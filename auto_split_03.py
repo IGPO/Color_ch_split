@@ -4,12 +4,13 @@ import numpy as np
 # -----------------------------
 # Параметры
 # -----------------------------
-A_min_ratio = 0.001  # минимальная площадь квадрата относительно изображения
-epsilon_ratio = 0.03  # точность approxPolyDP (чуть больше для бликов)
-side_ratio_thresh = 1.15
+A_min_ratio = 0.001        # минимальная площадь квадрата
+epsilon_ratio = 0.05       # точность approxPolyDP
+side_ratio_thresh = 1.3
 angle_cos_thresh = 0.3
-N = 128  # размер выпрямленного квадрата
-margin_ratio = 0.08  # обрезка границ
+N = 128                    # размер выпрямленного квадрата
+margin_ratio = 0.08        # отступ от краёв
+adaptive_thresh_C = 5       # параметр adaptive threshold для маски
 
 # -----------------------------
 # Функции
@@ -58,8 +59,6 @@ clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 L_clahe = clahe.apply(L)
 L_blur = cv2.GaussianBlur(L_clahe, (5,5), 0)
 
-cv2.imshow("CLAHE + Blur", L_blur)
-
 # -----------------------------
 # 2. Canny + Morphology
 # -----------------------------
@@ -67,16 +66,13 @@ edges = cv2.Canny(L_blur, 40, 120)
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
 edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-cv2.imshow("Canny Edges", edges)
-cv2.imshow("Morph Close", edges_closed)
-
 # -----------------------------
 # 3. Найти контуры
 # -----------------------------
 contours, _ = cv2.findContours(edges_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
 found_squares = []
 pixels_list = []
+square_imgs = []
 
 for cnt in contours:
     area = cv2.contourArea(cnt)
@@ -94,33 +90,61 @@ for cnt in contours:
     pts_src = order_points(approx)
     found_squares.append(pts_src)
 
-    # perspective warp
-    pts_dst = np.array([
-        [0, 0],
-        [N-1, 0],
-        [N-1, N-1],
-        [0, N-1]
-    ], dtype=np.float32)
+    # Perspective warp
+    pts_dst = np.array([[0,0],[N-1,0],[N-1,N-1],[0,N-1]], dtype=np.float32)
     H = cv2.getPerspectiveTransform(pts_src, pts_dst)
-    square_img = cv2.warpPerspective(img, H, (N, N))
-    
-    # убрать рамку
+    square_img = cv2.warpPerspective(img, H, (N,N))
+
+    # -----------------------------
+    # Маска внутри квадрата (устойчивость к бликам)
+    # -----------------------------
+    hsv = cv2.cvtColor(square_img, cv2.COLOR_BGR2HSV)
+    H_chan, S_chan, V_chan = cv2.split(hsv)
+    mask = cv2.adaptiveThreshold(V_chan, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                 cv2.THRESH_BINARY_INV, 15, adaptive_thresh_C)
+    mask_color = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+    # убрать края (margin)
     margin = int(N * margin_ratio)
     inner = square_img[margin:-margin, margin:-margin]
-    pixels = inner.reshape(-1, 3)
+    pixels = inner.reshape(-1,3)
     pixels_list.append(pixels)
 
     # нарисовать квадрат на исходном изображении
     pts_int = pts_src.astype(int)
     cv2.polylines(img_draw, [pts_int], isClosed=True, color=(0,255,0), thickness=2)
 
-    # показать выпрямлённый квадрат
-    cv2.imshow(f"Square {len(found_squares)}", square_img)
+    # для визуализации сохраняем квадрат и маску
+    square_imgs.append(cv2.hconcat([square_img, mask_color]))
 
 # -----------------------------
-# 4. Показ исходного с квадратыми
+# 4. Компоновка изображений для визуализации
 # -----------------------------
-#cv2.imshow("Squares Found", img_draw)
+# верхняя строка: CLAHE + Blur, Canny, Morphology
+top_row = cv2.hconcat([img_draw,
+                       cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR),
+                       cv2.cvtColor(edges_closed, cv2.COLOR_GRAY2BGR)])
+
+# нижняя строка: квадраты + их маски
+if square_imgs:
+    bottom_row = cv2.hconcat(square_imgs) if len(square_imgs) > 1 else square_imgs[0]
+else:
+    bottom_row = np.zeros((N, N*2,3), dtype=np.uint8)  # пустое место
+
+# приводим bottom_row к ширине top_row
+w_top = top_row.shape[1]
+bottom_row = cv2.resize(bottom_row, (w_top, bottom_row.shape[0]))
+
+# убедимся, что оба изображения BGR
+if len(top_row.shape) == 2:
+    top_row = cv2.cvtColor(top_row, cv2.COLOR_GRAY2BGR)
+if len(bottom_row.shape) == 2:
+    bottom_row = cv2.cvtColor(bottom_row, cv2.COLOR_GRAY2BGR)
+
+# объединяем вертикально
+final_vis = cv2.vconcat([top_row, bottom_row])
+
+cv2.imshow("Processing Pipeline", final_vis)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
