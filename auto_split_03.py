@@ -46,6 +46,7 @@ def order_points(approx):
 # Загрузка изображения
 # -----------------------------
 img = cv2.imread('кетоны/свет0.5-вид сверху/full.jpg')
+# img = cv2.imread('кетоны/свет0-вид под углом/full.jpg')
 img_draw = img.copy()
 h, w = img.shape[:2]
 A_min = h * w * A_min_ratio
@@ -67,23 +68,28 @@ L_blur = cv2.GaussianBlur(L_clahe, (5,5), 0)
 # edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 # -----------------------------
 
-# 2. HSV Saturation + Adaptive Threshold (вместо Canny) + Morphology
 # -----------------------------
-# Переходим в HSV, чтобы выделить цветные квадраты на белом/сером фоне
+# 2. HSV Saturation + Улучшенная морфология
+# -----------------------------
 hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 h, s, v = cv2.split(hsv)
 
-# Насыщенность (S) лучше всего выделяет розовые/фиолетовые зоны
-# Используем адаптивный порог, чтобы компенсировать неравномерный свет
+# Адаптивный порог: увеличиваем block_size до 31, чтобы он был больше букв текста
+# C=2 помогает отсечь слабый фон
 s_thresh = cv2.adaptiveThreshold(s, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                 cv2.THRESH_BINARY, 21, -5)
+                                 cv2.THRESH_BINARY, 31, -5)
 
-# Морфология: закрываем дырки внутри квадратов и убираем мелкий мусор
-kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-edges_closed = cv2.morphologyEx(s_thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-# Можно добавить небольшое размытие, чтобы сгладить "ступеньки" контура
-edges_closed = cv2.GaussianBlur(edges_closed, (3,3), 0)
+# 1. Убираем мелкий текст (OPENING)
+kernel_small = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+mask_no_text = cv2.morphologyEx(s_thresh, cv2.MORPH_OPEN, kernel_small, iterations=2)
 
+# 2. Склеиваем разрывы внутри квадратов от бликов (CLOSING)
+# Используем ядро побольше, чтобы соединить "ошметки" на 4-м и 5-м квадратах
+kernel_big = cv2.getStructuringElement(cv2.MORPH_RECT, (7,7))
+edges_closed = cv2.morphologyEx(mask_no_text, cv2.MORPH_CLOSE, kernel_big, iterations=2)
+
+# Размытие, чтобы findContours не цеплялся за "лесенку" пикселей
+edges_closed = cv2.GaussianBlur(edges_closed, (7,7), 0)
 # -----------------------------
 # 3. Найти контуры
 # -----------------------------
