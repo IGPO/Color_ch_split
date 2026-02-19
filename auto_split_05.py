@@ -24,8 +24,8 @@ SQUARE_SIZE = 128              # размер выпрямленного ква�
 MARGIN_RATIO = 0.1             # доля отступа от краёв при анализе цвета
 
 # Фильтрация контуров
-A_MIN_RATIO = 0.003            # минимальная доля площади изображения для референсных (уменьшено)
-A_MAX_RATIO = 0.01             # максимальная доля площади (отсечь упаковку)
+A_MIN_RATIO = 0.001            # минимальная доля площади изображения для референсных
+A_MAX_RATIO = 0.05             # максимальная доля площади (отсечь упаковку)
 A_MIN_RATIO_TEST = 0.0001     # минимальная доля для тестового (уменьшено)
 A_MAX_RATIO_TEST = 0.03      # максимальная доля для тестового
 EPSILON_RATIO = 0.05           # точность аппроксимации contour (approxPolyDP)
@@ -46,8 +46,11 @@ COLOR_TEXT = (255, 255, 255)   # белый - текст
 
 # Пути по умолчанию
 folder_path = 'кетоны/19_febr/'
-file = 'day_light_rot1'
+file = 'weeked_light_plus_yellow_lamp_rot'
 ext = '.jpg'
+
+# DEBUG флаги
+DEBUG_TEST_SQUARE = True  # Показывать все контуры при поиске тестового квадрата
 DEFAULT_IMAGE_PATH = folder_path + file + ext
 
 # ============================================================================
@@ -181,6 +184,44 @@ def create_model_visualization(model, width=800, height=100):
     return bgr_gradient
 
 
+def save_debug_images(img, s_thresh, edges, mask_combined, mask_clean, output_dir="debug_masks"):
+    """Сохраняет промежуточные маски для анализа."""
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+    
+    cv2.imwrite(f"{output_dir}/01_hsv_saturation.jpg", s_thresh)
+    cv2.imwrite(f"{output_dir}/02_canny_edges.jpg", edges)
+    cv2.imwrite(f"{output_dir}/03_mask_combined.jpg", mask_combined)
+    cv2.imwrite(f"{output_dir}/04_mask_clean.jpg", mask_clean)
+    
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    cv2.imwrite(f"{output_dir}/00_original_gray.jpg", gray)
+    
+    print(f"  [DEBUG] Маски сохранены в {output_dir}/")
+
+
+def visualize_all_contours(img, contours, output_path="debug_all_contours.jpg"):
+    """Рисует ВСЕ найденные контуры для диагностики."""
+    vis_img = img.copy()
+    
+    # Рисуем все контуры разными цветами
+    for i, cnt in enumerate(contours):
+        color = (np.random.randint(0, 255), np.random.randint(0, 255), np.random.randint(0, 255))
+        cv2.drawContours(vis_img, [cnt], 0, color, 2)
+        
+        # Вычисляем площадь и центр
+        M = cv2.moments(cnt)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            area = cv2.contourArea(cnt)
+            cv2.putText(vis_img, f"#{i} A={area:.0f}", (cx, cy), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    
+    cv2.imwrite(output_path, vis_img)
+    print(f"  [DEBUG] Все контуры нарисованы: {output_path}")
+
+
 # ============================================================================
 # ОБНАРУЖЕНИЕ КВАДРАТОВ
 # ============================================================================
@@ -273,31 +314,69 @@ def find_squares_in_image(img, a_min_ratio, a_max_ratio):
     s_thresh = cv2.adaptiveThreshold(s_channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                      cv2.THRESH_BINARY, 31, -2)
     
+    # ДОПОЛНИТЕЛЬНАЯ маска для тёмных/чёрных объектов
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 30, 100)
+    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
+    
+    # Для маленьких объектов (тестовых квадратов) добавляем специальные маски
+    v_channel = hsv[:, :, 2]
+    v_inverted = 255 - v_channel
+    v_dark_mask = cv2.adaptiveThreshold(v_inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY, 31, -2)
+    
+    # Для маленьких объектов - используем расширенную маску с локальным контрастом
+    if a_min_ratio < 0.0005:
+        # 1. Локальный контраст с маленьким окном (для чёрного квадрата на полоске)
+        gray_local = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY, 15, -5)
+        
+        # 2. Инверсия V канала для обнаружения тёмных объектов (без dilate)
+        v_binary = cv2.threshold(v_inverted, 150, 255, cv2.THRESH_BINARY)[1]
+        
+        # Объединяем маски для тестовых квадратов
+        mask_combined = cv2.bitwise_or(cv2.bitwise_or(s_thresh, edges_closed), 
+                                       cv2.bitwise_or(gray_local, v_binary))
+    else:
+        # Референсные квадраты: стандартная маска
+        mask_combined = cv2.bitwise_or(s_thresh, edges_closed)
+    
     # 2. Морфологическая очистка
+    # ВАЖНО: Для маленьких объектов (тестовых квадратов) пропускаем MORPH_CLOSE,
+    # чтобы не объединить квадрат с полоской в один контур
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    mask_closed = cv2.morphologyEx(s_thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask_clean = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    if a_min_ratio < 0.0005:  # Тестовые квадраты - очень маленькие
+        # Только открытие (удаление шума), без закрытия
+        mask_clean = cv2.morphologyEx(mask_combined, cv2.MORPH_OPEN, kernel, iterations=1)
+        print(f"    [Режим маленьких объектов] Пропускаем MORPH_CLOSE чтобы сохранить детали")
+    else:  # Референсные квадраты - используем обе операции
+        mask_closed = cv2.morphologyEx(mask_combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask_clean = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel, iterations=1)
     
     # 3. Поиск контуров
     contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     print(f"    Найдено контуров: {len(contours)}")
     
-    # Для каждого контура выводим информацию
-    all_areas = []
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        all_areas.append(area)
+    # [DEBUG] Сохраняем промежуточные маски для анализа (раскомментируйте для диагностики)
+    # save_debug_images(img, s_thresh, edges_closed, mask_combined, mask_clean)
+    # visualize_all_contours(img, contours, f"debug_contours_a_min_{a_min_ratio:.5f}.jpg")
     
-    if all_areas:
-        all_areas.sort()
-        print(f"    Площади всех контуров (min-max): {all_areas[0]:.1f} - {all_areas[-1]:.1f}")
-        print(f"    Медиана площадей: {all_areas[len(all_areas)//2]:.1f}")
+    # Для тестовых квадратов (очень маленькая площадь) - показываем debug
+    if DEBUG_TEST_SQUARE and a_min_ratio < 0.0005:
+        save_debug_images(img, s_thresh, edges_closed, mask_combined, mask_clean)
+        visualize_all_contours(img, contours, f"debug_contours_test_a_min_{a_min_ratio:.5f}.jpg")
     
+    # DEBUG: детальный анализ каждого контура
     candidates = []
+    failed_by_area = []
+    failed_by_shape = []
     
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area < a_min or area > a_max:
+            failed_by_area.append((cnt, area))
             continue
         
         peri = cv2.arcLength(cnt, True)
@@ -313,7 +392,13 @@ def find_squares_in_image(img, a_min_ratio, a_max_ratio):
                 'area': area
             })
             print(f"      Найден квадрат, площадь: {area}")
+        else:
+            failed_by_shape.append((cnt, area, len(approx)))
     
+    print(f"    Отфильтровано по площади: {len(failed_by_area)}")
+    print(f"    Не прошли проверку формы: {len(failed_by_shape)}")
+    if failed_by_shape:
+        print(f"      Примеры: {[(s[1], s[2]) for s in failed_by_shape[:5]]}")
     print(f"    Кандидатов-квадратов: {len(candidates)}")
     
     # Преобразуем в упорядоченные точки
@@ -360,6 +445,104 @@ def find_reference_squares(img):
     return selected_squares
 
 
+def find_test_square_by_edges(img):
+    """Альтернативный поиск тестового квадрата через Canny edges (для чёрных/тёмных объектов)."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 30, 100)
+    
+    # Morphology для замыкания контуров
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    # Поиск контуров из чистых границ
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    print(f"  Canny: найдено контуров={len(contours)}")
+    
+    squares = []
+    h_img, w_img = img.shape[:2]
+    a_min = h_img * w_img * A_MIN_RATIO_TEST
+    a_max = h_img * w_img * A_MAX_RATIO_TEST
+    
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < a_min or area > a_max:
+            continue
+        
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, EPSILON_RATIO * peri, True)
+        
+        if is_square_geometry(approx, SIDE_RATIO_THRESH):
+            box = cv2.boxPoints(cv2.minAreaRect(cnt))
+            squares.append(order_points(box))
+            print(f"    Canny: найден квадрат площадь={area:.0f}")
+    
+    return squares
+
+
+def find_test_square_in_bottom_half(img):
+    """Специальный поиск тестового квадрата именно в нижней половине с жёсткими фильтрами."""
+    h_img, w_img = img.shape[:2]
+    h_half = h_img // 2
+    
+    # Обрезаем нижнюю половину
+    img_bottom = img[h_half:, :, :]
+    
+    # Локальный контрастный поиск в нижней половине
+    gray = cv2.cvtColor(img_bottom, cv2.COLOR_BGR2GRAY)
+    
+    # Очень маленькое окно для локального контраста
+    gray_local = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       cv2.THRESH_BINARY, 11, -8)
+    
+    # Морфология только открытие (убрать шум)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    gray_local = cv2.morphologyEx(gray_local, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    # Поиск контуров
+    contours, _ = cv2.findContours(gray_local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    print(f"  [Bottom half] Найдено контуров: {len(contours)}")
+    
+    squares = []
+    # Жёсткие ограничения по размеру для нижней половины
+    a_min = h_img * w_img * A_MIN_RATIO_TEST * 0.5
+    a_max = h_img * w_img * 0.005  # Очень маленькие объекты
+    
+    print(f"  [Bottom half] a_min={a_min:.0f}, a_max={a_max:.0f}")
+    
+    # Отфильтруем контуры по размеру - берём только маленькие
+    size_filtered = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < a_min or area > a_max:
+            continue
+        size_filtered.append((cnt, area))
+    
+    print(f"  [Bottom half] Контуров подходящего размера: {len(size_filtered)}")
+    
+    # Если есть контуры подходящего размера, берём самый маленький
+    # (чтобы избежать захвата полоски целиком)
+    if size_filtered:
+        size_filtered.sort(key=lambda x: x[1])  # Сортируем по площади
+        cnt_best, area_best = size_filtered[0]   # Берём самый маленький
+        
+        print(f"  [Bottom half] Выбран контур площадь={area_best:.0f}")
+        
+        # Применяем минимальный фильтр геометрии (очень мягко)
+        peri = cv2.arcLength(cnt_best, True)
+        approx = cv2.approxPolyDP(cnt_best, EPSILON_RATIO * peri, True)
+        
+        # Для маленьких объектов принимаем даже 3-точечный контур (лучше чем ничего)
+        if len(approx) >= 3:
+            box = cv2.boxPoints(cv2.minAreaRect(cnt_best))
+            # Переводим координаты обратно в исходное изображение
+            box_full = box.copy()
+            box_full[:, 1] += h_half  # Смещение Y
+            squares.append(order_points(box_full))
+            print(f"    [Bottom half] Квадрат принят (точек пермета: {len(approx)})")
+    
+    return squares
+
+
 def find_test_square(img, reference_colors=None):
     """Находит тестовый квадрат (маленький, внизу, из пула референсных цветов, однородный).
     
@@ -368,20 +551,43 @@ def find_test_square(img, reference_colors=None):
     """
     all_squares = find_squares_in_image(img, A_MIN_RATIO_TEST, A_MAX_RATIO_TEST)
     
-    # Фильтруем по положению: только нижняя половина изображения
+    # ВАЖНО: Фильтруем по положению И размеру СНАЧАЛА
     h_img = img.shape[0]
     w_img = img.shape[1]
+    
+    # Только нижняя половина изображения
     bottom_squares = [s for s in all_squares if np.mean(s[:, 1]) > h_img * 0.5]
     
-    # Опционально: ограничение по горизонтали (например, для правого угла)
-    # Раскомментируйте для фильтрации: bottom_squares = [s for s in bottom_squares if np.mean(s[:, 0]) > w_img * 0.5]
+    # КРИТИЧ ФИЛЬТР: Для тестовых квадратов - только МАЛЕНЬКИЕ объекты
+    # Площадь должна быть в диапазоне ~46 до ~2765 пикселей (теоретическое МОО для маленького квадрата)
+    a_min_strict = h_img * w_img * A_MIN_RATIO_TEST
+    a_max_strict = h_img * w_img * 0.003  # Очень жёсткое ограничение сверху
     
-    if not bottom_squares:
-        print("  Тестовый квадрат не найден в нижней половине изображения")
+    small_squares = []
+    for s in bottom_squares:
+        # Вычисляем площадь квадрата
+        pts = s.reshape((-1, 1, 2))
+        x, y, w, h = cv2.boundingRect(pts)
+        box_area = w * h
+        
+        if a_min_strict <= box_area <= a_max_strict:
+            small_squares.append(s)
+            print(f"    Маленький квадрат: box_area={box_area:.0f}")
+        else:
+            print(f"    Отфильтрован по размеру: box_area={box_area:.0f}")
+    
+    print(f"  Фильтр размера: из {len(bottom_squares)} в нижней половине -> {len(small_squares)} маленьких")
+    
+    if not small_squares:
+        print("  Тестовый квадрат не найден, пробуем поиск в нижней половине...")
+        small_squares = find_test_square_in_bottom_half(img)
+    
+    if not small_squares:
+        print("  Тестовый квадрат не найден вообще")
         return [], []
     
     valid_squares = []
-    for s in bottom_squares:
+    for s in small_squares:
         # Выпрямляем и извлекаем цвет
         test_img_warped = warp_square(img, s, SQUARE_SIZE)
         test_lab = extract_robust_lab(test_img_warped)
@@ -401,27 +607,13 @@ def find_test_square(img, reference_colors=None):
                 print("    Отсеян по однородности")
                 continue
         
-        # Если есть референсные цвета, фильтруем по близости цвета
-        # Временно убрана проверка цвета для диагностики
-        # if reference_colors is not None and len(reference_colors) > 0:
-        #     min_dist = float('inf')
-        #     for ref_lab in reference_colors:
-        #         dist = np.linalg.norm(test_lab - ref_lab)
-        #         min_dist = min(min_dist, dist)
-        #     
-        #     print(f"  Тестовый кандидат: min_dist={min_dist:.2f}")
-        #     # Если расстояние больше порога, пропускаем
-        #     if min_dist >= 20:
-        #         print("    Отсеян по цвету")
-        #         continue
-        
         valid_squares.append(s)
     
     # Если несколько, берём самый нижний
     if len(valid_squares) > 1:
         valid_squares.sort(key=lambda s: np.mean(s[:, 1]), reverse=True)
     
-    return valid_squares[:1], bottom_squares  # Возвращаем выбранный и всех кандидатов
+    return valid_squares[:1], small_squares  # Возвращаем выбранный и всех маленьких кандидатов
 
 
 def separate_scale_and_tests(found_squares):
@@ -454,6 +646,8 @@ def process_image(image_path):
         'scale_squares': [],
         'test_strips': [],
         'test_candidates': [],  # Все кандидаты на тестовый квадрат
+        'test_candidate_imgs': [],
+        'test_candidate_stats': [],
         'scale_imgs': [],
         'test_imgs': [],
         'model': None,
@@ -504,6 +698,22 @@ def process_image(image_path):
         print("  Тестовый квадрат не найден или не прошел проверки цвета/однородности")
     
     results['test_candidates'] = test_candidates
+    # Сохраняем миниатюры и статистику по всем кандидатам (для визуализации)
+    candidate_imgs = [warp_square(img, pts, SQUARE_SIZE) for pts in test_candidates]
+    candidate_stats = []
+    for ci, pts in zip(candidate_imgs, test_candidates):
+        lab_full = cv2.cvtColor(ci, cv2.COLOR_BGR2LAB)
+        margin = int(SQUARE_SIZE * MARGIN_RATIO)
+        inner = lab_full[margin:-margin, margin:-margin]
+        l_channel = inner[:, :, 0].flatten()
+        l_filtered = l_channel[(l_channel > np.percentile(l_channel, 5)) & (l_channel < np.percentile(l_channel, 80))]
+        mean_l = float(np.mean(l_filtered)) if len(l_filtered) > 0 else float(np.mean(l_channel))
+        std_l = float(np.std(l_filtered)) if len(l_filtered) > 0 else float(np.std(l_channel))
+        area = float(np.prod([np.linalg.norm(pts[i] - pts[(i+1)%4]) for i in range(4)]) / 4)
+        candidate_stats.append({'area': area, 'mean_L': mean_l, 'std_L': std_l})
+
+    results['test_candidate_imgs'] = candidate_imgs
+    results['test_candidate_stats'] = candidate_stats
     
     if len(scale_squares) == 0:
         print("⚠ Референсные квадраты не найдены")
@@ -606,21 +816,72 @@ def create_composite_visualization(img, results):
     # Верхняя часть: аннотированное исходное изображение
     img_draw = visualize_results(img, results)
     
-    # Средняя часть: выпрямленные квадраты
-    square_imgs = results['scale_imgs'] + results['test_imgs']
-    if square_imgs:
-        bottom_row = cv2.hconcat(square_imgs)
-        bottom_row = cv2.resize(bottom_row, (img_draw.shape[1], SQUARE_SIZE))
+    # Средняя часть: выпрямленные референсные квадраты (оставляем без горизонтального растягивания)
+    def pad_to_width(img_row, target_w, pad_color=(255,255,255)):
+        h, w = img_row.shape[:2]
+        if w == target_w:
+            return img_row
+        if w < target_w:
+            pad = np.full((h, target_w - w, 3), pad_color, dtype=np.uint8)
+            return cv2.hconcat([img_row, pad])
+        # Если шире — уменьшаем пропорционально по ширине
+        scale = target_w / float(w)
+        new_h = max(1, int(h * scale))
+        return cv2.resize(img_row, (target_w, new_h))
+
+    scale_row = None
+    if results['scale_imgs']:
+        scale_row = cv2.hconcat(results['scale_imgs'])
+        # Убедимся, что высота равна SQUARE_SIZE
+        if scale_row.shape[0] != SQUARE_SIZE:
+            scale_row = cv2.resize(scale_row, (scale_row.shape[1], SQUARE_SIZE))
+        scale_row = pad_to_width(scale_row, img_draw.shape[1])
+        
+        # ДОБАВЛЯЕМ РАЗДЕЛИТЕЛЬ между основным изображением и рядом квадратов
+        separator = np.full((3, img_draw.shape[1], 3), (0, 255, 0), dtype=np.uint8)  # Зелёная линия
+        
+        composite = cv2.vconcat([img_draw, separator, scale_row])
     else:
-        return img_draw
+        composite = img_draw
     
     # Нижняя часть: модель цвета (если есть)
-    composite = cv2.vconcat([img_draw, bottom_row])
-    
     if results['model'] is not None:
         model_vis = create_model_visualization(results['model'])
         model_vis = cv2.resize(model_vis, (img_draw.shape[1], model_vis.shape[0]))
-        composite = cv2.vconcat([composite, model_vis])
+        # Разделитель перед моделью
+        separator_model = np.full((3, img_draw.shape[1], 3), (0, 255, 0), dtype=np.uint8)
+        composite = cv2.vconcat([composite, separator_model, model_vis])
+
+    # Нижняя полоса: миниатюры кандидатов на тестовый квадрат с подписью
+    cand_imgs = results.get('test_candidate_imgs', [])
+    cand_stats = results.get('test_candidate_stats', [])
+    if cand_imgs:
+        # Размер миниатюры
+        thumb_h = SQUARE_SIZE // 2
+        thumb_w = SQUARE_SIZE // 2
+        thumbs = []
+        for i, thumb in enumerate(cand_imgs):
+            t = cv2.resize(thumb, (thumb_w, thumb_h))
+            stats = cand_stats[i] if i < len(cand_stats) else {}
+            area = stats.get('area', 0)
+            std_l = stats.get('std_L', 0)
+            cv2.rectangle(t, (0,0), (thumb_w-1, thumb_h-1), (255,0,0), 2)
+            label = f"#{i+1} A:{int(area)} Lstd:{int(std_l)}"
+            pad = 24
+            canvas = np.zeros((thumb_h+pad, thumb_w, 3), dtype=np.uint8)
+            canvas[:thumb_h, :, :] = t
+            cv2.putText(canvas, label, (4, thumb_h + pad - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+            thumbs.append(canvas)
+
+        try:
+            thumbs_row = cv2.hconcat(thumbs)
+            # Не растягиваем по ширине — просто дополняем пустым фоном до ширины composite
+            thumbs_row = pad_to_width(thumbs_row, composite.shape[1])
+            # Разделитель перед кандидатами
+            separator_candidates = np.full((3, composite.shape[1], 3), (0, 255, 0), dtype=np.uint8)
+            composite = cv2.vconcat([composite, separator_candidates, thumbs_row])
+        except Exception:
+            pass
     
     return composite
 
@@ -683,6 +944,7 @@ if __name__ == '__main__':
     print(f"\n✓ Результат сохранён: {output_path}")
     
     # Показываем результат (окно закроется при нажатии любой клавиши)
+    # Закомментировано для headless-режима (сервер без дисплея)
     print("\nОкно с результатом откроется. Нажмите любую клавишу для закрытия...")
     cv2.imshow('Результат обработки', composite)
     cv2.waitKey(0)
