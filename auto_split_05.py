@@ -46,7 +46,9 @@ COLOR_TEXT = (255, 255, 255)   # белый - текст
 
 # Пути по умолчанию
 folder_path = 'кетоны/19_febr/'
-file = 'weeked_light_plus_yellow_lamp_rot'
+folder_path = 'кетоны/свет0.5-вид сверху/'
+file = 'weeked_light_rot'
+file = 'full'
 ext = '.jpg'
 
 # DEBUG флаги
@@ -312,19 +314,19 @@ def find_squares_in_image(img, a_min_ratio, a_max_ratio):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     s_channel = hsv[:, :, 1]
     s_thresh = cv2.adaptiveThreshold(s_channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY, 31, -2)
+                                     cv2.THRESH_BINARY, 21, -2)
     
     # ДОПОЛНИТЕЛЬНАЯ маска для тёмных/чёрных объектов
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 30, 100)
-    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    edges = cv2.Canny(gray, 40, 120)
+    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
     
     # Для маленьких объектов (тестовых квадратов) добавляем специальные маски
     v_channel = hsv[:, :, 2]
     v_inverted = 255 - v_channel
     v_dark_mask = cv2.adaptiveThreshold(v_inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                        cv2.THRESH_BINARY, 31, -2)
+                                        cv2.THRESH_BINARY, 21, -2)
     
     # Для маленьких объектов - используем расширенную маску с локальным контрастом
     if a_min_ratio < 0.0005:
@@ -345,15 +347,17 @@ def find_squares_in_image(img, a_min_ratio, a_max_ratio):
     # 2. Морфологическая очистка
     # ВАЖНО: Для маленьких объектов (тестовых квадратов) пропускаем MORPH_CLOSE,
     # чтобы не объединить квадрат с полоской в один контур
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    
     
     if a_min_ratio < 0.0005:  # Тестовые квадраты - очень маленькие
         # Только открытие (удаление шума), без закрытия
-        mask_clean = cv2.morphologyEx(mask_combined, cv2.MORPH_OPEN, kernel, iterations=1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask_clean = cv2.morphologyEx(mask_combined, cv2.MORPH_OPEN, kernel, iterations=2)
         print(f"    [Режим маленьких объектов] Пропускаем MORPH_CLOSE чтобы сохранить детали")
     else:  # Референсные квадраты - используем обе операции
-        mask_closed = cv2.morphologyEx(mask_combined, cv2.MORPH_CLOSE, kernel, iterations=2)
-        mask_clean = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel, iterations=1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask_closed = cv2.morphologyEx(mask_combined, cv2.MORPH_CLOSE, kernel, iterations=1)
+        mask_clean = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel, iterations=2)
     
     # 3. Поиск контуров
     contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

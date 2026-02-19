@@ -1,0 +1,7 @@
+/*.jpeg
+./*.jpg
+/*.png
+debug_masks/
+debug_masks/*.jpg
+debug_masks/*.png
+debug_masks/*.jpeg
