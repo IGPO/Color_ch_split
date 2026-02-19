@@ -3,10 +3,11 @@
 
 Алгоритм:
 1. Загрузить изображение
-2. Выделить цветные квадраты по маске насыщенности (HSV)
-3. Разделить на шкалу (5 эталонных квадратов) и тесты (полоски ниже)
-4. Построить сплайн-модель цвета для каждого LAB канала
-5. Оценить концентрацию тестовых полосок
+2. Обнаружить референсные квадраты шкалы (большие, сверху) с порогами площади A_MIN_RATIO - A_MAX_RATIO
+3. Обнаружить тестовый квадрат (маленький, внизу, в 4 раза меньше) с порогами A_MIN_RATIO_TEST - A_MAX_RATIO_TEST
+4. Выпрямить перспективу квадратов
+5. Построить сплайн-модель цвета для каждого LAB канала на основе референсных квадратов
+6. Оценить концентрацию тестового квадрата
 """
 
 import cv2
@@ -23,8 +24,10 @@ SQUARE_SIZE = 128              # размер выпрямленного ква�
 MARGIN_RATIO = 0.1             # доля отступа от краёв при анализе цвета
 
 # Фильтрация контуров
-A_MIN_RATIO = 0.001            # минимальная доля площади изображения
-A_MAX_RATIO = 0.05             # максимальная доля площади (отсечь упаковку)
+A_MIN_RATIO = 0.003            # минимальная доля площади изображения для референсных (уменьшено)
+A_MAX_RATIO = 0.01             # максимальная доля площади (отсечь упаковку)
+A_MIN_RATIO_TEST = 0.0001     # минимальная доля для тестового (уменьшено)
+A_MAX_RATIO_TEST = 0.03      # максимальная доля для тестового
 EPSILON_RATIO = 0.05           # точность аппроксимации contour (approxPolyDP)
 SIDE_RATIO_THRESH = 1.4        # допуск по соотношению сторон (перспектива)
 ANGLE_COS_THRESH = 0.4         # допуск по углам четырёхугольника
@@ -42,7 +45,10 @@ COLOR_TEST = (255, 165, 0)     # оранжевый - тестовые поло�
 COLOR_TEXT = (255, 255, 255)   # белый - текст
 
 # Пути по умолчанию
-DEFAULT_IMAGE_PATH = 'кетоны/свет0.5-вид сверху/full.jpg'
+folder_path = 'кетоны/19_febr/'
+file = 'day_light_rot1'
+ext = '.jpg'
+DEFAULT_IMAGE_PATH = folder_path + file + ext
 
 # ============================================================================
 # УТИЛИТЫ РАБОТЫ С ЦВЕТОМ
@@ -238,8 +244,8 @@ def warp_square(source_img, points, size):
     return cv2.warpPerspective(source_img, H, (size, size))
 
 
-def find_squares_in_image(img):
-    """Находит все цветные квадраты на изображении.
+def find_squares_in_image(img, a_min_ratio, a_max_ratio):
+    """Находит цветные квадраты на изображении с заданными порогами площади.
     
     Алгоритм:
     1. Выделяем цветные области по HSV насыщенности
@@ -248,14 +254,19 @@ def find_squares_in_image(img):
     
     Args:
         img: Исходное изображение (BGR)
+        a_min_ratio: Минимальная доля площади
+        a_max_ratio: Максимальная доля площади
         
     Returns:
         list: Список упорядоченных точек (4x2 каждый) для каждого найденного квадрата
     """
     h_img, w_img = img.shape[:2]
-    a_min = h_img * w_img * A_MIN_RATIO
-    a_max = h_img * w_img * A_MAX_RATIO
-    
+
+    a_min = h_img * w_img * a_min_ratio
+    a_max = h_img * w_img * a_max_ratio
+    print(f"  Поиск квадратов: a_min_ratio={a_min_ratio:.5f}, a_min={a_min:.5f}")
+    print(f"                 : a_max_ratio={a_max_ratio:.5f}, a_max={a_max:.5f}")
+    print(f"  Размер изображения: {w_img}x{h_img}, площадь: {h_img * w_img}") 
     # 1. Маска по HSV насыщенности
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     s_channel = hsv[:, :, 1]
@@ -269,6 +280,19 @@ def find_squares_in_image(img):
     
     # 3. Поиск контуров
     contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    print(f"    Найдено контуров: {len(contours)}")
+    
+    # Для каждого контура выводим информацию
+    all_areas = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        all_areas.append(area)
+    
+    if all_areas:
+        all_areas.sort()
+        print(f"    Площади всех контуров (min-max): {all_areas[0]:.1f} - {all_areas[-1]:.1f}")
+        print(f"    Медиана площадей: {all_areas[len(all_areas)//2]:.1f}")
+    
     candidates = []
     
     for cnt in contours:
@@ -288,41 +312,122 @@ def find_squares_in_image(img):
                 'box': box,
                 'area': area
             })
+            print(f"      Найден квадрат, площадь: {area}")
+    
+    print(f"    Кандидатов-квадратов: {len(candidates)}")
     
     # Преобразуем в упорядоченные точки
     found_squares = [order_points(c['box']) for c in candidates]
     return found_squares
 
 
-def separate_scale_and_tests(found_squares):
-    """Разделяет найденные квадраты на шкалу (сверху) и тесты (снизу).
+def find_reference_squares(img):
+    """Находит референсные квадраты шкалы (большие, сверху, на одном уровне)."""
+    all_squares = find_squares_in_image(img, A_MIN_RATIO, A_MAX_RATIO)
     
-    Args:
-        found_squares: Список упорядоченных точек квадратов
-        
-    Returns:
-        tuple: (scale_squares, test_strips) - два списка упорядоченных точек
-    """
-    if len(found_squares) == 0:
-        return [], []
+    # Фильтруем по положению: только верхняя половина изображения
+    h_img = img.shape[0]
+    top_squares = [s for s in all_squares if np.mean(s[:, 1]) < h_img * 0.5]
     
-    # Сортируем по вертикали
-    found_squares_sorted = sorted(found_squares, key=lambda s: np.mean(s[:, 1]))
+    if len(top_squares) < EXPECTED_SQUARE_COUNT:
+        # Если меньше 5, возвращаем все
+        top_squares.sort(key=lambda s: np.mean(s[:, 0]))
+        return top_squares
     
-    # Находим медианную Y координату
-    median_y = np.median([np.mean(s[:, 1]) for s in found_squares_sorted])
+    # Вычисляем средние Y-координаты
+    y_means = [np.mean(s[:, 1]) for s in top_squares]
+    median_y = np.median(y_means)
     
-    # Разделяем: шкала выше медианы, тесты ниже
-    scale_squares = [s for s in found_squares_sorted 
-                     if abs(np.mean(s[:, 1]) - median_y) < SQUARE_SIZE * 0.5]
-    test_strips = [s for s in found_squares_sorted 
-                   if np.mean(s[:, 1]) > median_y + SQUARE_SIZE]
+    # Отсеиваем квадраты, которые сильно отклоняются от медианной Y (более чем на 10% высоты квадрата)
+    tolerance = SQUARE_SIZE * 0.1
+    level_squares = [s for s, y in zip(top_squares, y_means) if abs(y - median_y) < tolerance]
+    
+    # Сортируем по площади (убыванию) и берём топ EXPECTED_SQUARE_COUNT
+    level_squares_with_area = []
+    for s in level_squares:
+        # Приблизительная площадь как среднее расстояние между точками
+        side1 = np.linalg.norm(s[0] - s[1])
+        side2 = np.linalg.norm(s[1] - s[2])
+        area = side1 * side2
+        level_squares_with_area.append((area, s))
+    
+    level_squares_with_area.sort(key=lambda x: x[0], reverse=True)
+    selected_squares = [s for _, s in level_squares_with_area[:EXPECTED_SQUARE_COUNT]]
     
     # Сортируем по горизонтали (слева направо)
-    scale_squares.sort(key=lambda s: np.mean(s[:, 0]))
-    test_strips.sort(key=lambda s: np.mean(s[:, 0]))
+    selected_squares.sort(key=lambda s: np.mean(s[:, 0]))
     
-    return scale_squares, test_strips
+    return selected_squares
+
+
+def find_test_square(img, reference_colors=None):
+    """Находит тестовый квадрат (маленький, внизу, из пула референсных цветов, однородный).
+    
+    Returns:
+        tuple: (selected_squares, all_candidates) - выбранный и все кандидаты
+    """
+    all_squares = find_squares_in_image(img, A_MIN_RATIO_TEST, A_MAX_RATIO_TEST)
+    
+    # Фильтруем по положению: только нижняя половина изображения
+    h_img = img.shape[0]
+    w_img = img.shape[1]
+    bottom_squares = [s for s in all_squares if np.mean(s[:, 1]) > h_img * 0.5]
+    
+    # Опционально: ограничение по горизонтали (например, для правого угла)
+    # Раскомментируйте для фильтрации: bottom_squares = [s for s in bottom_squares if np.mean(s[:, 0]) > w_img * 0.5]
+    
+    if not bottom_squares:
+        print("  Тестовый квадрат не найден в нижней половине изображения")
+        return [], []
+    
+    valid_squares = []
+    for s in bottom_squares:
+        # Выпрямляем и извлекаем цвет
+        test_img_warped = warp_square(img, s, SQUARE_SIZE)
+        test_lab = extract_robust_lab(test_img_warped)
+        
+        # Проверяем однородность: дисперсия L канала после фильтрации
+        lab_full = cv2.cvtColor(test_img_warped, cv2.COLOR_BGR2LAB)
+        margin = int(SQUARE_SIZE * MARGIN_RATIO)
+        inner = lab_full[margin:-margin, margin:-margin]
+        l_channel = inner[:, :, 0].flatten()
+        print(f"  Тестовый кандидат: средний L={np.mean(l_channel):.1f}, std L={np.std(l_channel):.1f}")
+        l_filtered = l_channel[(l_channel > np.percentile(l_channel, 5)) & (l_channel < np.percentile(l_channel, 80))]
+        if len(l_filtered) > 0:
+            l_std = np.std(l_filtered)
+            print(f"  Тестовый кандидат: L_std={l_std:.2f}")
+            # Если дисперсия L > 60, считаем неоднородным
+            if l_std > 60:
+                print("    Отсеян по однородности")
+                continue
+        
+        # Если есть референсные цвета, фильтруем по близости цвета
+        # Временно убрана проверка цвета для диагностики
+        # if reference_colors is not None and len(reference_colors) > 0:
+        #     min_dist = float('inf')
+        #     for ref_lab in reference_colors:
+        #         dist = np.linalg.norm(test_lab - ref_lab)
+        #         min_dist = min(min_dist, dist)
+        #     
+        #     print(f"  Тестовый кандидат: min_dist={min_dist:.2f}")
+        #     # Если расстояние больше порога, пропускаем
+        #     if min_dist >= 20:
+        #         print("    Отсеян по цвету")
+        #         continue
+        
+        valid_squares.append(s)
+    
+    # Если несколько, берём самый нижний
+    if len(valid_squares) > 1:
+        valid_squares.sort(key=lambda s: np.mean(s[:, 1]), reverse=True)
+    
+    return valid_squares[:1], bottom_squares  # Возвращаем выбранный и всех кандидатов
+
+
+def separate_scale_and_tests(found_squares):
+    """Устаревшая функция - теперь поиск разделён на отдельные функции."""
+    # Эта функция больше не используется, но оставлена для совместимости
+    return [], []
 
 
 # ============================================================================
@@ -348,6 +453,7 @@ def process_image(image_path):
     results = {
         'scale_squares': [],
         'test_strips': [],
+        'test_candidates': [],  # Все кандидаты на тестовый квадрат
         'scale_imgs': [],
         'test_imgs': [],
         'model': None,
@@ -363,17 +469,45 @@ def process_image(image_path):
     
     print(f"✓ Загружено изображение {image_path}")
     
-    # 1. Обнаруживаем все квадраты
-    found_squares = find_squares_in_image(img)
-    print(f"✓ Найдено {len(found_squares)} квадратов")
+    # 1. Обнаруживаем референсные квадраты шкалы
+    scale_squares = find_reference_squares(img)
+    print(f"✓ Найдено {len(scale_squares)} референсных квадратов")
+    if len(scale_squares) > 0:
+        areas = [np.prod([np.linalg.norm(s[i] - s[(i+1)%4]) for i in range(4)]) / 4 for s in scale_squares]  # approximate area
+        print(f"  Площади референсных: {[f'{a:.0f}' for a in areas]}")
     
-    if len(found_squares) == 0:
-        print("⚠ Квадраты не найдены")
+    # Выпрямляем референсные квадраты для извлечения цветов
+    scale_imgs_temp = [warp_square(img, pts, SQUARE_SIZE) for pts in scale_squares]
+    reference_colors = []
+    for img_sq in scale_imgs_temp:
+        lab = extract_robust_lab(img_sq)
+        reference_colors.append(lab)
+        
+        # Отладка однородности референсных
+        lab_full = cv2.cvtColor(img_sq, cv2.COLOR_BGR2LAB)
+        margin = int(SQUARE_SIZE * MARGIN_RATIO)
+        inner = lab_full[margin:-margin, margin:-margin]
+        l_channel = inner[:, :, 0].flatten()
+        l_filtered = l_channel[(l_channel > np.percentile(l_channel, 5)) & (l_channel < np.percentile(l_channel, 80))]
+        if len(l_filtered) > 0:
+            l_std = np.std(l_filtered)
+            print(f"  Референсный: L_std={l_std:.2f}")
+    
+    # 2. Обнаруживаем тестовый квадрат (с проверкой цвета)
+    test_strips, test_candidates = find_test_square(img, reference_colors)
+    print(f"✓ Найдено {len(test_strips)} тестовых квадратов")
+    print(f"  Всего кандидатов: {len(test_candidates)}")
+    if len(test_strips) > 0:
+        areas_test = [np.prod([np.linalg.norm(s[i] - s[(i+1)%4]) for i in range(4)]) / 4 for s in test_strips]
+        print(f"  Площади тестовых: {[f'{a:.0f}' for a in areas_test]}")
+    else:
+        print("  Тестовый квадрат не найден или не прошел проверки цвета/однородности")
+    
+    results['test_candidates'] = test_candidates
+    
+    if len(scale_squares) == 0:
+        print("⚠ Референсные квадраты не найдены")
         return results
-    
-    # 2. Разделяем на шкалу и тесты
-    scale_squares, test_strips = separate_scale_and_tests(found_squares)
-    print(f"  Шкала: {len(scale_squares)}, Тесты: {len(test_strips)}")
     
     results['scale_squares'] = scale_squares
     results['test_strips'] = test_strips
@@ -429,18 +563,29 @@ def visualize_results(img, results):
         cv2.putText(img_draw, f"Scale {i+1}", (pts_int[0][0], pts_int[0][1] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_SCALE, 2)
     
-    # Отрисовка тестов (оранжевая) с результатами
+    # Отрисовка кандидатов на тестовый квадрат (синий)
+    for i, pts in enumerate(results.get('test_candidates', [])):
+        pts_int = pts.astype(int)
+        # Жирная синяя рамка для всех кандидатов
+        cv2.polylines(img_draw, [pts_int], True, (255, 0, 0), 2)
+        cv2.putText(img_draw, f"Cand {i+1}", (pts_int[0][0], pts_int[0][1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+    
+    # Отрисовка ВЫБРАННЫХ тестов (ярко-оранжевая) с результатами - ПОВЕРХ кандидатов
     for i, pts in enumerate(results['test_strips']):
         pts_int = pts.astype(int)
-        cv2.polylines(img_draw, [pts_int], True, COLOR_TEST, 3)
+        # ТОЛСТАЯ ярко-оранжевая рамка для выбранного
+        cv2.polylines(img_draw, [pts_int], True, COLOR_TEST, 5)
+        cv2.rectangle(img_draw, pts_int[0], pts_int[2], COLOR_TEST, 5)
         
         if i < len(results['results']) and results['results'][i] is not None:
-            conc_text = f"TEST {i+1}: {results['results'][i]:.2f}"
+            conc_text = f"✓ TEST {i+1}: {results['results'][i]:.2f}"
         else:
-            conc_text = f"TEST {i+1}: No data"
+            conc_text = f"✓ TEST {i+1}: No data"
         
-        cv2.putText(img_draw, conc_text, (pts_int[0][0], pts_int[0][1] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEST, 2)
+        cv2.putText(img_draw, conc_text, (pts_int[0][0], pts_int[0][1] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_TEST, 3)
+
     
     return img_draw
 
@@ -533,7 +678,7 @@ if __name__ == '__main__':
         print(f"  ⚠ Модель не построена (недостаточно квадратов шкалы)")
     
     # Сохраняем результат
-    output_path = 'result_improved.jpg'
+    output_path = folder_path + "proc/" + file + '_proc.jpg'
     cv2.imwrite(output_path, composite)
     print(f"\n✓ Результат сохранён: {output_path}")
     
